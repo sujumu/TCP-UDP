@@ -1,0 +1,222 @@
+#include <ESP8266WiFi.h>        // ESP8266에서 Wi-Fi 기능을 사용하기 위한 라이브러리
+#include <ESP8266WiFiMulti.h>   // 여러 Wi-Fi 중 연결 가능한 AP에 접속할 수 있게 해주는 라이브러리
+#include <ArduinoJson.h>        // JSON 형식의 데이터를 만들고 해석하기 위한 라이브러리
+
+// Wi-Fi 공유기의 SSID와 비밀번호 설정
+#ifndef STASSID
+#define STASSID "U+Net61DF"
+#define STAPSK  "0108016660"
+#endif
+
+// LED가 연결된 ESP8266 핀 번호 정의
+#define led1 D3
+#define led2 D4
+#define led3 D5
+#define led4 D6
+
+// Wi-Fi 접속 정보
+const char* ssid     = STASSID;
+const char* password = STAPSK;
+
+// ESP8266이 접속할 TCP 서버의 IP 주소
+// 여기서는 PC에서 실행 중인 C# WinForms 또는 Node-RED 서버의 IP라고 볼 수 있음
+const char* host = "192.168.219.102";
+
+// TCP 서버의 포트 번호
+// 서버와 클라이언트가 같은 포트 번호를 사용해야 통신 가능
+const uint16_t port = 60000;
+
+// Wi-Fi 연결 관리를 위한 객체
+ESP8266WiFiMulti WiFiMulti;
+
+// 이 ESP8266 장치를 구분하기 위한 고유 ID
+// 서버는 이 ID를 보고 어떤 장치가 접속했는지 구분할 수 있음
+String device_id = "#device1";
+
+
+// setup() 함수는 ESP8266이 켜질 때 한 번만 실행됨
+void setup() {
+  Serial.begin(115200);   // 시리얼 모니터 통신 속도 설정
+
+  // LED 핀을 출력 모드로 설정
+  pinMode(led1, OUTPUT);
+  pinMode(led2, OUTPUT);
+  pinMode(led3, OUTPUT);
+  pinMode(led4, OUTPUT);
+
+  // ESP8266을 Station 모드로 설정
+  // Station 모드란 ESP8266이 공유기에 접속하는 일반적인 Wi-Fi 기기처럼 동작한다는 의미
+  WiFi.mode(WIFI_STA);
+
+  // 접속할 Wi-Fi 공유기 정보 등록
+  WiFiMulti.addAP(ssid, password);
+
+  Serial.println();
+  Serial.println();
+  Serial.print("Wait for WiFi... ");
+
+  // Wi-Fi에 연결될 때까지 반복 대기
+  while (WiFiMulti.run() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  // Wi-Fi 연결 성공 시 출력
+  Serial.println("");
+  Serial.println("WiFi connected");
+
+  // 공유기로부터 할당받은 ESP8266의 IP 주소 출력
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  delay(500);
+}
+
+
+void loop() {
+  // 접속하려는 서버 정보 출력
+  Serial.print("connecting to ");
+  Serial.print(host);
+  Serial.print(':');
+  Serial.println(port);
+
+  // TCP 통신을 위한 클라이언트 객체 생성
+  // ESP8266이 TCP 클라이언트 역할을 하게 됨
+  WiFiClient client;
+
+  // TCP 서버에 접속 시도
+  // 접속 실패 시 5초 대기 후 loop() 처음부터 다시 실행
+  if (!client.connect(host, port)) {
+    Serial.println("connection failed");
+    Serial.println("wait 5 sec...");
+    delay(5000);
+    return;
+  }
+
+  // 여기까지 왔다면 서버 접속 성공
+
+  // 서버와 장치 ID 등록 절차가 끝났는지 확인하는 변수
+  // false: 아직 서버가 이 장치를 승인하지 않음
+  // true : 서버가 "#OK"를 보내서 등록 완료됨
+  bool is_accepted = false;
+
+  // 1초마다 서버에 접속 유지 메시지를 보내기 위한 시간 변수
+  unsigned long dt = millis();
+
+  // 2초마다 센서값 및 LED 상태를 monitor1로 보내기 위한 시간 변수
+  unsigned long dt2 = millis();
+
+  // 서버와 TCP 연결이 유지되는 동안 반복 실행
+  while (client.connected()) {
+
+    // ==============================
+    // 1초마다 서버에 메시지 전송
+    // ==============================
+    if (millis() - dt > 1000) {
+      dt = millis();
+
+      // 아직 서버와 장치 등록 절차가 끝나지 않은 경우
+      if (!is_accepted) {
+        // 서버에 자신의 장치 ID를 전송
+        // 서버는 "#device1"을 보고 어떤 장치가 접속했는지 저장할 수 있음
+        client.println(device_id);
+      } 
+      else {
+        // 서버와 등록이 끝난 후에는 접속 유지용 JSON 메시지 전송
+        String output;
+        StaticJsonDocument<200> doc;
+
+        doc["from"] = device_id;   // 보내는 장치
+        doc["to"] = "#server";     // 받는 대상
+        doc["msg"] = "OK";         // 접속 유지 메시지
+
+        // JSON 객체를 문자열로 변환
+        serializeJson(doc, output);
+
+        // 서버로 JSON 문자열 전송
+        client.println(output);
+      }
+    }
+
+
+    // ==============================
+    // 2초마다 monitor1에게 상태 데이터 전송
+    // ==============================
+    if (millis() - dt2 > 2000) {
+      dt2 = millis();
+
+      String output;
+      StaticJsonDocument<300> doc;
+
+      doc["from"] = device_id;       // 보내는 장치 ID
+      doc["to"] = "#monitor1";       // 데이터를 받을 대상
+
+      // msg 내부에 여러 상태값을 넣음
+      doc["msg"]["Rssi"] = WiFi.RSSI();       // Wi-Fi 신호 세기
+      doc["msg"]["Cds"] = analogRead(A0);     // 조도센서 또는 가변저항 값
+      doc["msg"]["Led1"] = digitalRead(led1); // LED1 현재 상태
+      doc["msg"]["Led2"] = digitalRead(led2); // LED2 현재 상태
+      doc["msg"]["Led3"] = digitalRead(led3); // LED3 현재 상태
+      doc["msg"]["Led4"] = digitalRead(led4); // LED4 현재 상태
+
+      // JSON 객체를 문자열로 변환
+      serializeJson(doc, output);
+
+      // 서버로 상태 데이터 전송
+      client.println(output);
+
+      // 필요하면 시리얼 모니터에서도 확인 가능
+      // Serial.println(output);
+    }
+
+
+    // ==============================
+    // 서버에서 보낸 메시지 수신
+    // ==============================
+    if (client.available()) {
+      // 서버로부터 수신된 데이터가 있을 때 실행됨
+      Serial.println("메시지가 수신되었다");
+
+      // 줄바꿈 문자 '\n'이 나올 때까지 문자열 읽기
+      String msg = client.readStringUntil('\n');
+
+      // 서버가 "#OK"를 보내면 장치 등록 완료로 판단
+      if (msg == "#OK") {
+        Serial.println("서버하고 명함 주고 받는 절차를 마무리했다!");
+        is_accepted = true;
+      } 
+      else {
+        // "#OK"가 아니라면 JSON 제어 명령이라고 판단
+
+        StaticJsonDocument<200> doc;
+
+        // 수신된 JSON 문자열을 JSON 객체로 변환
+        deserializeJson(doc, msg);
+
+        // JSON에서 필요한 값 추출
+        String from = doc["from"];              // 명령을 보낸 장치 또는 서버
+        int Led_num = doc["msg"]["Led_num"];    // 제어할 LED 번호
+        int Led_state = doc["msg"]["State"];    // LED 상태, 1이면 ON, 0이면 OFF
+
+        // LED 번호에 따라 해당 LED 제어
+        if (Led_num == 1) {
+          digitalWrite(led1, Led_state);
+        } 
+        else if (Led_num == 2) {
+          digitalWrite(led2, Led_state);
+        } 
+        else if (Led_num == 3) {
+          digitalWrite(led3, Led_state);
+        } 
+        else if (Led_num == 4) {
+          digitalWrite(led4, Led_state);
+        }
+      }
+    }
+  }
+
+  // TCP 연결이 끊어지면 클라이언트 종료
+  client.stop();
+
+  // 이후 loop()가 다시 처음부터 실행되며 서버 재접속을 시도함
+}
